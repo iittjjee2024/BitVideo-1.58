@@ -1,0 +1,41 @@
+# Exclude docs and achievements
+docs/
+ACHIEVEMENTS_REPORT.md
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+dist/
+build/
+
+# Data & outputs (too large for git)
+data/
+outputs/
+outputs_128ch/
+raw_data/
+semantic-review/
+
+# Temp validation scripts
+.task9_*.py
+.task8_*.py
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDEs
+.vscode/
+.idea/
+*.swp
+
+# Large files
+*.zip
+*.mp4
+*.pt
+*.safetensors
+C:/bitvideo_*
+
+# PDF research paper
+*.pdf
