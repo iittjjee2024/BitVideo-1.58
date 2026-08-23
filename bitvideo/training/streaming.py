@@ -181,8 +181,12 @@ class StreamingForwardBackward:
     ) -> torch.Tensor:
         """Execute forward pass with layer streaming.
 
-        Each block is loaded to GPU, computes its output, then offloaded.
-        Gradient checkpointing means we don't store intermediate activations.
+        For training, blocks stay on GPU during forward+backward (autograd needs them).
+        They are loaded at the start and offloaded after loss.backward() completes.
+        This uses more GPU memory than ideal but ensures correct gradients.
+
+        For a T4 (15.6GB), we can fit ~10-12 blocks simultaneously.
+        For 8GB GPUs, reduce model depth or use smaller dim.
 
         Args:
             video: Noisy latent video [B, C, T, H, W]
@@ -194,8 +198,14 @@ class StreamingForwardBackward:
         """
         model = self.model
 
-        # --- Permanently-resident forward (patch_embed, timestep, context) ---
-        # These are on GPU already (~200MB total)
+        # --- Move all blocks to GPU for this forward+backward pass ---
+        blocks = model.blocks
+        for block in blocks:
+            load_module(block, self.device, non_blocking=True)
+        if torch.cuda.is_available():
+            torch.cuda.current_stream().synchronize()
+
+        # --- Forward pass (all on GPU now) ---
         tokens, patch_info = model.patch_embed(video, return_info=True)
         grid_t, grid_h, grid_w = patch_info.grid_size
         spatial_size = grid_h * grid_w
@@ -204,53 +214,45 @@ class StreamingForwardBackward:
         t_emb = model.timestep_embed(timesteps)
         projected_context = model.context_projection(context)
 
-        # --- Stream through transformer blocks ---
-        blocks = model.blocks
         context_cache = None
+        for i, block in enumerate(blocks):
+            if i == 0:
+                tokens, context_cache = block(
+                    tokens,
+                    timestep_embedding=t_emb,
+                    temporal_size=temporal_size,
+                    spatial_size=spatial_size,
+                    context=projected_context,
+                    spatial_rotary=None,
+                    temporal_rotary=None,
+                    return_context_cache=True,
+                )
+            else:
+                tokens = block(
+                    tokens,
+                    timestep_embedding=t_emb,
+                    temporal_size=temporal_size,
+                    spatial_size=spatial_size,
+                    context_cache=context_cache,
+                    spatial_rotary=None,
+                    temporal_rotary=None,
+                    return_context_cache=False,
+                )
 
-        for i in range(len(blocks)):
-            with self.ctx.stream_block(i) as block:
-                if self.config.gradient_checkpointing and self.model.training:
-                    # Gradient checkpointing: don't store activations, recompute in backward
-                    tokens = self._checkpointed_block_forward(
-                        block, tokens, t_emb, temporal_size, spatial_size,
-                        projected_context if i == 0 else None,
-                        context_cache,
-                        i == 0,  # return_context_cache only for first block
-                    )
-                    if i == 0 and isinstance(tokens, tuple):
-                        tokens, context_cache = tokens
-                else:
-                    if i == 0:
-                        tokens, context_cache = block(
-                            tokens,
-                            timestep_embedding=t_emb,
-                            temporal_size=temporal_size,
-                            spatial_size=spatial_size,
-                            context=projected_context,
-                            spatial_rotary=None,
-                            temporal_rotary=None,
-                            return_context_cache=True,
-                        )
-                    else:
-                        tokens = block(
-                            tokens,
-                            timestep_embedding=t_emb,
-                            temporal_size=temporal_size,
-                            spatial_size=spatial_size,
-                            context_cache=context_cache,
-                            spatial_rotary=None,
-                            temporal_rotary=None,
-                            return_context_cache=False,
-                        )
-
-        # --- Final layer (on GPU) ---
+        # --- Final layer ---
         output = model.final_layer(tokens, t_emb)
-
-        # Unpatchify back to [B, C, T, H, W]
         output = unpatchify_video(output, patch_info, channels=model.out_channels)
 
         return output
+
+    def offload_blocks_after_backward(self) -> None:
+        """Call this AFTER loss.backward() to free GPU memory for next step."""
+        blocks = self.model.blocks
+        for block in blocks:
+            offload_module(block, non_blocking=True)
+        if torch.cuda.is_available():
+            torch.cuda.current_stream().synchronize()
+            torch.cuda.empty_cache()
 
     def _checkpointed_block_forward(
         self,
@@ -508,8 +510,11 @@ class StreamingTrainer:
             alphas_cumprod=self.noise_scheduler.alphas_cumprod.to(self.device),
         )
 
-        # Backward (autograd handles the streaming via gradient checkpointing)
+        # Backward (blocks are on GPU during this)
         loss.backward()
+
+        # NOW offload all blocks back to CPU to free GPU memory
+        self.engine.offload_blocks_after_backward()
 
         return loss.item()
 
