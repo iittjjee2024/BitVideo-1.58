@@ -6,5 +6,20 @@ compared in the ablation matrix (§13).
 """
 
 from bitmem.interface.mem_tokens import MemoryTokenInterface
+from bitmem.interface.adaptive import AdaptiveMemoryConditioning, pool_memory_embeddings
+from bitmem.interface.cross_attn import MemoryCrossAttention
+from bitmem.interface.unified import (
+    InjectionMethod,
+    InjectorConfig,
+    MemoryAugmentedDiT,
+)
 
-__all__ = ["MemoryTokenInterface"]
+__all__ = [
+    "AdaptiveMemoryConditioning",
+    "InjectionMethod",
+    "InjectorConfig",
+    "MemoryAugmentedDiT",
+    "MemoryCrossAttention",
+    "MemoryTokenInterface",
+    "pool_memory_embeddings",
+]
