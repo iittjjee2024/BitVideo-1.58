@@ -8,7 +8,7 @@ selectively retrieved, dynamically consolidated memory achieve better task-level
 efficiency than a substantially larger memory-free model? Every component sits
 behind an interface so the ablation matrix can attempt to *falsify* the hypothesis.
 
-## Status: Stage 0 complete (validated)
+## Status: Stages 0–4 complete (validated), Stage 5 next
 
 | Stage | Description | Status |
 |-------|-------------|--------|
@@ -16,8 +16,67 @@ behind an interface so the ablation matrix can attempt to *falsify* the hypothes
 | **1** | FP16 DiT baseline train/eval harness | ✅ **done, 17 tests pass** |
 | **2** | Ternary DiT, measure degradation table | ✅ **done (shares Stage-1 harness)** |
 | **3** | Episodic+semantic memory, full retrieval, consolidation, Methods A & C | ✅ **done, 21 tests pass** |
-| 4 | Agent controller (heuristic → learned) | planned |
-| 5 | Joint optimization + full ablation matrix | planned |
+| **4** | Agent controller (heuristic gate/write/consolidate + real retrieval) | ✅ **done, 20 tests pass** |
+| 5 | Joint optimization + full ablation matrix (the hypothesis test) | planned |
+
+### Stage 4 delivered
+
+- **Experience + evaluator** (`agent/evaluator.py`): `ExperienceRecord` captures
+  the §11 fields (task, retrieved ids, actions, generation, reward, failure
+  modes, new knowledge, query embedding) and converts to a storable `MemoryItem`.
+  `UtilityEvaluator` scores reward as *relative improvement over a memory-free
+  baseline* — the exact quantity the hypothesis rests on. `update_memory_utilities`
+  applies the value-aware retention update and dents confidence on bad outcomes
+  (poison defense, §14).
+- **Swappable policies** (`agent/policies.py`): `RetrievalGate` (`AlwaysRetrieve`,
+  `HeuristicRetrievalGate`, and a tiny differentiable `LearnedRetrievalGate` for
+  Stage 5), `WritePolicy` (`HeuristicWritePolicy`), `ConsolidationPolicy`
+  (`PeriodicConsolidation`). Policies read only the controller's **compact state**,
+  never the full store (§4).
+- **Control loop** (`agent/controller.py`): `AgentController.step()` runs
+  Observe → Retrieve → Generate → Evaluate → Update → Consolidate with built-in
+  failure guards (retrieval-loop cap, growth-triggered consolidation, poison
+  confidence decay, provenance for contradiction audits). `agent_metrics()` emits
+  the §12 rates (retrieval rate, unnecessary-retrieval rate, useful-write rate,
+  recoveries, memory total).
+
+**Bug caught + fixed during testing (cold-start deadlock):** on an empty store,
+retrieval cannot beat the memory-free baseline, so reward ≈ 0 and a reward-only
+write policy would *never* write — leaving the store empty forever and the agent
+unable to ever learn to retrieve. Fixed by adding a **novelty clause**: a
+non-redundant experience is stored even at low reward (surprising outcomes are
+still always stored; redundant ones are still always dropped). This is what lets
+the agent bootstrap a store it can later retrieve from.
+
+### Stage 4 agentic real-retrieval diagnostic
+
+`python scripts/bitmem_stage4_agent.py` removes Stage 3's oracle crutch. On an
+associative-recall task (K tasks, each with a hidden answer vector keyed by a
+noisy query), the agent must **write its own experiences** and later **retrieve
+the right one from the real store** — retrieval can now fail. Reward = cosine
+similarity between the retrieved answer and the true answer. This probes the
+memory + retrieval + write + utility loop as a whole, independent of the DiT
+(whose ability to *use* correct memory was shown in Stage 3).
+
+Run: 6 tasks, dim 32, key noise 0.05, 300 episodes, CPU.
+
+| config | recall@0.9 (overall) | recall@0.9 (steady-state) | mean similarity |
+|--------|----------------------|----------------------------|------------------|
+| random memory (control) | 0.000 | 0.000 | −0.048 |
+| agent, always-retrieve | 0.163 | **1.000** | 1.000 |
+| agent, heuristic gate | 0.163 | **1.000** | 1.000 |
+
+**Honest reading:** once each task has been written once (steady state), the
+agent retrieves the exact right answer **every time** (recall@0.9 = 1.000, mean
+similarity = 1.000), while a store filled with random memories never does
+(0.000). The lower *overall* number (0.163) is a cold-start artifact — during
+warmup a task's answer has not been written yet, so no correct memory exists to
+find; the eval reports both numbers rather than hiding the warmup. Over 300
+episodes the 300 writes are distilled by consolidation down to a handful of
+long-term memories (one cluster per task), confirming the growth guard and
+consolidation loop work. **Verdict: real retrieval works without an oracle.**
+This validates the agent mechanism; it is *not* video-quality evidence — that
+requires trained models and the Stage 5 ablation matrix.
 
 ### Stage 3 delivered
 

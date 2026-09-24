@@ -17,13 +17,29 @@ be ablated to test — and potentially falsify — that hypothesis.
 from bitmem.memory.base import MemoryItem, MemoryStore, RetrievalPolicy
 from bitmem.memory.storage import DictMemoryStore
 from bitmem.memory.retrieval import CosineRetrievalPolicy, WeightedRetrievalPolicy
+from bitmem.memory.typed import MemorySystem
+from bitmem.interface.unified import (
+    InjectionMethod,
+    InjectorConfig,
+    MemoryAugmentedDiT,
+)
+from bitmem.agent.controller import AgentController, ControllerConfig
+from bitmem.agent.evaluator import ExperienceRecord, UtilityEvaluator
 
 __all__ = [
+    "AgentController",
+    "ControllerConfig",
+    "CosineRetrievalPolicy",
+    "DictMemoryStore",
+    "ExperienceRecord",
+    "InjectionMethod",
+    "InjectorConfig",
+    "MemoryAugmentedDiT",
     "MemoryItem",
     "MemoryStore",
+    "MemorySystem",
     "RetrievalPolicy",
-    "DictMemoryStore",
-    "CosineRetrievalPolicy",
+    "UtilityEvaluator",
     "WeightedRetrievalPolicy",
 ]
 
