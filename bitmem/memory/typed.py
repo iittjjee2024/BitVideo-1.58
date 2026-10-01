@@ -55,9 +55,14 @@ class TypedMemory:
         self,
         config: TypedMemoryConfig | None = None,
         policy: RetrievalPolicy | None = None,
+        *,
+        store=None,
     ) -> None:
         self.config = config or TypedMemoryConfig()
-        self.store = DictMemoryStore(
+        # `store` lets callers inject a different backend (e.g. a
+        # TurboQuantMemoryStore for compressed keys) without changing type
+        # policies — the backend is swappable by design (§3, §15).
+        self.store = store or DictMemoryStore(
             policy=policy or CosineRetrievalPolicy(),
             max_items=self.config.max_items,
             diversity_weight=self.config.diversity_weight,
@@ -198,16 +203,59 @@ class MemorySystem:
         procedural: ProceduralMemory | None = None,
         long_term: LongTermMemory | None = None,
     ) -> None:
-        self.episodic = episodic or EpisodicMemory()
-        self.semantic = semantic or SemanticMemory()
-        self.procedural = procedural or ProceduralMemory()
-        self.long_term = long_term or LongTermMemory()
+        # Use `is None` (not `or`): a TypedMemory defines __len__, so an empty
+        # store is falsy and `episodic or EpisodicMemory()` would silently discard
+        # a caller-supplied empty store (e.g. a TurboQuant-backed one).
+        self.episodic = episodic if episodic is not None else EpisodicMemory()
+        self.semantic = semantic if semantic is not None else SemanticMemory()
+        self.procedural = procedural if procedural is not None else ProceduralMemory()
+        self.long_term = long_term if long_term is not None else LongTermMemory()
         self._by_type = {
             "episodic": self.episodic,
             "semantic": self.semantic,
             "procedural": self.procedural,
             "long_term": self.long_term,
         }
+
+    @classmethod
+    def with_turboquant(
+        cls,
+        dim: int,
+        *,
+        bits: int = 4,
+        seed: int = 0,
+    ) -> "MemorySystem":
+        """Build a MemorySystem whose typed stores compress keys with TurboQuant.
+
+        Every typed memory keeps its own TurboQuant-backed store, so retrieval
+        keys are stored at ~`bits` per coordinate instead of fp32 — the paper's
+        vector-database compression applied across the whole memory system. Type
+        policies (decay/importance) are unchanged; only the storage backend swaps.
+        """
+        from bitmem.memory.turbo_store import TurboQuantMemoryStore
+
+        def make(type_cls):
+            # Construct the type normally to inherit its default config + policy,
+            # then swap its storage backend for a TurboQuant-compressed one that
+            # reuses the same retrieval policy.
+            inst = type_cls()
+            backend = TurboQuantMemoryStore(
+                dim,
+                bits=bits,
+                policy=inst.store.policy,
+                max_items=inst.config.max_items,
+                diversity_weight=inst.config.diversity_weight,
+                seed=seed,
+            )
+            inst.store = backend
+            return inst
+
+        return cls(
+            episodic=make(EpisodicMemory),
+            semantic=make(SemanticMemory),
+            procedural=make(ProceduralMemory),
+            long_term=make(LongTermMemory),
+        )
 
     def write(self, item: MemoryItem, memory_type: str = "episodic") -> str | None:
         store = self._by_type.get(memory_type)

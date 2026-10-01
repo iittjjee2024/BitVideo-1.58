@@ -168,6 +168,7 @@ def _tiny_config(mode: QuantMode) -> BaselineConfig:
         batch_size=8,
         learning_rate=3e-4,
         log_every=1000,  # silence logging in tests
+        device="cpu",    # pin CPU: these unit tests feed CPU batches explicitly
     )
 
 

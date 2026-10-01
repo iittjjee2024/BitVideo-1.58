@@ -108,9 +108,9 @@ class BaselineConfig:
     grad_clip: float = 1.0
     num_train_timesteps: int = 1000
 
-    # Reproducibility
+    # Reproducibility. device="auto" picks CUDA when available, else CPU.
     init_seed: int = 0
-    device: str = "cpu"
+    device: str = "auto"
     dtype: torch.dtype = torch.float32
 
     # Logging
@@ -131,7 +131,8 @@ class BaselineTrainer:
 
     def __init__(self, config: BaselineConfig) -> None:
         self.config = config
-        self.device = torch.device(config.device)
+        from bitmem.train.joint import resolve_device
+        self.device = torch.device(resolve_device(config.device))
 
         # Deterministic init so FP16 and ternary start from the SAME weights.
         torch.manual_seed(config.init_seed)

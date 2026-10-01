@@ -8,7 +8,7 @@ selectively retrieved, dynamically consolidated memory achieve better task-level
 efficiency than a substantially larger memory-free model? Every component sits
 behind an interface so the ablation matrix can attempt to *falsify* the hypothesis.
 
-## Status: Stages 0–4 complete (validated), Stage 5 next
+## Status: Stages 0–5 complete + TurboQuant integrated (all validated)
 
 | Stage | Description | Status |
 |-------|-------------|--------|
@@ -17,7 +17,12 @@ behind an interface so the ablation matrix can attempt to *falsify* the hypothes
 | **2** | Ternary DiT, measure degradation table | ✅ **done (shares Stage-1 harness)** |
 | **3** | Episodic+semantic memory, full retrieval, consolidation, Methods A & C | ✅ **done, 21 tests pass** |
 | **4** | Agent controller (heuristic gate/write/consolidate + real retrieval) | ✅ **done, 20 tests pass** |
-| 5 | Joint optimization + full ablation matrix (the hypothesis test) | planned |
+| **5** | Joint optimization + full ablation matrix (the hypothesis test) | ✅ **done, 10 tests pass** |
+| **+** | **TurboQuant** vector quantization for the memory store (Google, ICLR 2026) | ✅ **done, 11 tests pass** |
+
+**Full suite: 101 tests passing.** Training/eval auto-select CUDA when a GPU is
+present (`device="auto"`); all results below were measured on an RTX 5050 Laptop
+GPU (sm_120) or CPU as noted.
 
 ### Stage 4 delivered
 
@@ -122,6 +127,123 @@ effect needs a task where memory carries more of the variance. This is a
 **mechanism validation** (the prerequisite for the hypothesis), not evidence
 about real-video quality, and it used **oracle retrieval** — retrieval-quality
 stress-testing is Stage 4's job.
+
+### Stage 5 — joint optimization + the falsifiable hypothesis test
+
+Stage 5 is where the hypothesis is actually put at risk. It adds:
+
+- **A memory-sensitive task** (`train/synthetic.py::MemorySensitiveDataset`):
+  `clean = shared_from_text + memory_gain · prototype[task_id]`. The per-task
+  prototype is **independent of the text**, so it is *unpredictable from
+  conditioning* — a memory-free model must regress it toward the mean (an
+  irreducible error), while a memory model can retrieve and subtract it. At
+  `memory_gain=2` the memory-only component carries ~80% of the predictable
+  signal variance (measured `memory_floor ≈ 4.0` clean-space vs ~1.0 shared).
+- **A joint trainer** (`train/joint.py::JointTrainer`) that trains the
+  memory-augmented ternary DiT end-to-end with **real cosine retrieval** from a
+  pre-populated store, an **x0 (clean-latent) objective** (epsilon-prediction
+  structurally hides the memory signal), and an optional **learned retrieval
+  gate**. One class produces every ablation cell by config.
+- **An ablation runner** (`scripts/bitmem_stage5_ablation.py`) with three
+  experiments: (A) matched-size memory ON/OFF, (B) injection-method sweep, (C)
+  the hypothesis — small ternary+memory vs a larger fp16 no-memory model.
+
+**Experiment A — matched-size memory ablation (ternary d48×2, x0, GPU).** Same
+backbone, memory ON vs OFF, so there is no size confound. The outcome depends on
+whether the task *forces* memory use:
+
+| task diversity | memory OFF MSE | best memory ON MSE | verdict |
+|----------------|----------------|---------------------|---------|
+| 32 prototypes (700 steps) | 0.31908 | 0.31911 | no help — model memorizes prototypes in weights |
+| 256 prototypes (700 steps) | 0.33239 | **0.33017** (−0.7%) | memory helps — too many prototypes to memorize |
+
+**Experiment C — the hypothesis (small ternary+memory vs larger fp16 no-memory).**
+
+| task diversity | small ternary+mem | large fp16 no-mem | result |
+|----------------|-------------------|-------------------|--------|
+| 8 prototypes | 1.429 (196K params) | **0.826** (1.83M params) | larger model WINS |
+| 256 prototypes | 1.646 (194K params) | 1.594 (1.83M params) | ~3% gap at **9.5× fewer params** |
+
+**Honest verdict on the hypothesis:** it is **conditionally supported, not
+unconditionally true.** When the task has few patterns, a larger memory-free
+model simply memorizes them in its weights and wins outright. As task diversity
+grows past what the small model's weights can hold, memory substitutes for scale:
+the gap collapses and, at fixed size, memory measurably lowers loss. The crossover
+is real and reproducible. We do **not** claim the small model beats the large one
+in absolute MSE here — it does not, at these sizes/steps — only that memory's
+value rises with the memory-demand of the task, exactly as the hypothesis
+predicts. A decisive win needs larger models, more steps, and ideally real data.
+
+**Measurement honesty (§16):**
+- Synthetic task + tiny models + x0 objective validate the **mechanism and the
+  ablation methodology**, not real-video quality.
+- Training/eval focus on the recoverable noise regime (`max_timestep_frac=0.5`);
+  at very high noise the clean latent is unrecoverable regardless of memory, which
+  would otherwise swamp the signal. This is a probing choice, documented as such.
+- The ternary path uses fake-quant (QAT) ops, not packed 1.58-bit kernels, so
+  wall-clock is **not** a fair speed benchmark; the storage bytes are theoretical
+  (log2(3) ≈ 1.585 bits/weight). GPU utilization is low at these tiny sizes —
+  per-op/Python overhead dominates, not arithmetic.
+
+Reproduce: `python scripts/bitmem_stage5_ablation.py --experiment A --num-tasks 256 --steps 700`
+
+### TurboQuant — vector quantization for the memory store (Google, ICLR 2026)
+
+The retrieval keys in the memory store are high-dimensional fp32 vectors scored
+by inner product — exactly the setting **TurboQuant** targets ([Zandieh, Daliri,
+Hadian, Mirrokni, *TurboQuant: Online Vector Quantization with Near-optimal
+Distortion Rate*, arXiv:2504.19874](https://arxiv.org/abs/2504.19874)). We
+integrated a faithful implementation of its core as a **swappable compressed
+store backend** (not a fork). *Content was rephrased for compliance with
+licensing restrictions.*
+
+- **`memory/turboquant.py`** — the data-oblivious codec:
+  - `RandomRotation`: a randomized Hadamard transform (sign flip + normalized
+    Hadamard, padded to a power of two). This is the data-oblivious rotation that
+    concentrates the coordinate distribution so per-coordinate scalar
+    quantization becomes near-optimal; verified orthogonal and invertible
+    (round-trip error ~1e-6, norm preserved). No training/calibration.
+  - `TurboQuantMSE`: rotate, then a uniform per-coordinate scalar quantizer with a
+    per-vector scale. Minimizes reconstruction MSE.
+  - `TurboQuantProd` (experimental): adds a 1-bit QJL residual correction for
+    inner-product estimation, recovered via the SimHash angle identity. See the
+    honest note below.
+- **`memory/turbo_store.py`** — `TurboQuantMemoryStore`, a drop-in `MemoryStore`
+  that composes `DictMemoryStore` and only changes the storage: each key is
+  replaced by its TurboQuant reconstruction and the compact integer code is
+  retained for honest byte accounting. Retrieval, scoring, decay, merge, and
+  diversity reranking all keep working unchanged.
+- **`MemorySystem.with_turboquant(dim, bits, seed)`** builds a whole memory
+  system (episodic/semantic/procedural/long-term) on the compressed backend.
+
+**Measured** (`scripts/bitmem_turboquant_bench.py`, 1000 keys, dim 128,
+recall@10 vs an exact fp32 cosine index, noisy queries):
+
+| bits | recon MSE | recall@10 vs fp32 | storage compression |
+|------|-----------|-------------------|---------------------|
+| fp32 | 0 | 1.000 | 1.0× |
+| 2 | 0.00233 | 0.531 | 14.2× |
+| 3 | 0.00042 | 0.766 | 9.9× |
+| 4 | 0.00009 | 0.884 | 7.5× |
+| 8 | ~0 | 0.994 | 3.9× |
+
+**Honest reading:** 8-bit TurboQuant keys are **near-lossless for retrieval
+(recall 0.994) at ~3.9× storage compression**; 4-bit trades down to 0.88
+recall@10 for 7.5×. recall@10 is a strict metric (recovering the exact top-10
+*set* under noisy queries); top-1 recall against the original keys is near-perfect
+even at 4 bits. The 1-bit **QJL `prod` variant did not improve inner-product
+accuracy in this regime** — at ≥2 bits the MSE-decoded dot product is already
+accurate and the QJL correction adds variance; QJL pays off at the extreme
+sub-2-bit compression the paper targets for KV-caches, not at retrieval
+bit-widths. `TurboQuantMSE` is therefore the recommended store codec, and
+`TurboQuantProd` is kept and clearly labeled experimental.
+
+**Scope note:** this compresses the **persisted/transmitted** key bytes (what a
+vector DB stores on disk or ships), which is TurboQuant's stated use case. The
+prototype still reconstructs keys to fp32 in RAM for scoring, so in-RAM footprint
+is not reduced here; a production backend would score directly against codes.
+
+Reproduce: `python scripts/bitmem_turboquant_bench.py`
 
 ### Stage 1 + 2 measured results (synthetic task, tiny DiT, CPU)
 

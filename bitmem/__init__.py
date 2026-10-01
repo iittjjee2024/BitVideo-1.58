@@ -25,6 +25,13 @@ from bitmem.interface.unified import (
 )
 from bitmem.agent.controller import AgentController, ControllerConfig
 from bitmem.agent.evaluator import ExperienceRecord, UtilityEvaluator
+from bitmem.memory.turboquant import (
+    RandomRotation,
+    TurboQuantConfig,
+    TurboQuantMSE,
+    TurboQuantProd,
+)
+from bitmem.memory.turbo_store import TurboQuantMemoryStore
 
 __all__ = [
     "AgentController",
@@ -38,9 +45,14 @@ __all__ = [
     "MemoryItem",
     "MemoryStore",
     "MemorySystem",
+    "RandomRotation",
     "RetrievalPolicy",
+    "TurboQuantConfig",
+    "TurboQuantMSE",
+    "TurboQuantMemoryStore",
+    "TurboQuantProd",
     "UtilityEvaluator",
     "WeightedRetrievalPolicy",
 ]
 
-__version__ = "0.1.0-stage0"
+__version__ = "0.1.0-stage5"
