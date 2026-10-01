@@ -286,6 +286,49 @@ well-separated (the realistic case), recall stays high.
 
 Reproduce: `python scripts/bitmem_ann_bench.py`
 
+### Measured quantized-matmul speed — closing the "speed is not benchmarked" caveat
+
+Every stage above carries the same honest disclaimer: *"ternary wall-clock is not
+a fair speed benchmark."* `scripts/bitmem_quant_speed_bench.py` replaces that
+disclaimer with **real measured latency** on this GPU (RTX 5050 Laptop, sm_120,
+fp16, M=2048), for four execution paths plus the W1.58A8 accuracy cost:
+
+| dim (K×N) | fp16 ms | QAT fake-quant ms | packed (portable) ms | INT8 `_int_mm` ms | INT8 vs fp16 | QAT rel. err |
+|-----------|---------|-------------------|----------------------|-------------------|--------------|--------------|
+| 512 | 0.052 | 1.619 | 0.974 | 0.056 | 0.93× | 0.397 |
+| 1024 | 0.168 | 1.478 | 1.091 | 0.180 | 0.93× | 0.395 |
+| 2048 | 0.684 | 3.132 | 4.705 | 0.693 | 0.99× | 0.396 |
+| 4096 | 3.885 | 13.283 | 18.816 | 2.789 | **1.39×** | 0.395 |
+
+Larger compute-bound sizes (M=4096): dim 4096 → **1.22×**, dim 8192 → **1.29×**.
+
+**Honest conclusions (this is the whole point of the exercise):**
+- **QAT fake-quant is 2–30× *slower* than fp16**, by design. It adds
+  activation/weight fake-quantization on top of a float matmul; it exists for
+  *training accuracy*, not inference speed. Any stage that trained through this
+  path was never going to show a speedup, and we never claimed one.
+- **The packed path here runs the portable Torch tier** (the compiled
+  `bitvideo._C` extension is not built and Triton is not installed on this box),
+  so its latency reflects PyTorch overhead, not 1.58-bit arithmetic. It is *not*
+  evidence about true ternary kernels either way.
+- **A genuine low-bit matmul (`torch._int_mm`, INT8) only beats fp16 at large,
+  compute-bound matrices** (~1.2–1.4× at dim ≥ 4096) and is roughly par below
+  that, where kernel-launch overhead dominates. This is a sober **lower bound**
+  on what a real packed W1.58A8 kernel could deliver on this consumer GPU — not
+  the 10×+ sometimes implied by the storage ratio.
+- **W1.58A8 costs ~0.40 mean relative error** per layer vs fp16 (the QAT err
+  column) — the accuracy price the hypothesis must weigh against any efficiency
+  gain.
+
+So the measured verdict is deliberately unglamorous and honest: **on this
+hardware, without compiled 1.58-bit kernels, quantization buys storage (the
+theoretical log2(3)-bit win) and a modest large-matrix INT8 compute win, not a
+dramatic speedup.** A real ternary speed advantage requires the compiled kernels
+and larger models than fit here — exactly the gap this benchmark makes explicit
+rather than papering over.
+
+Reproduce: `python scripts/bitmem_quant_speed_bench.py`
+
 ### Stage 1 + 2 measured results (synthetic task, tiny DiT, CPU)
 
 Ran `python scripts/bitmem_stage1_baseline.py --steps 400 --dim 128 --depth 2`
@@ -326,6 +369,9 @@ Ran `python scripts/bitmem_stage1_baseline.py --steps 400 --dim 128 --depth 2`
   the CPU **QAT fake-quant path** (extra quant/dequant ops), *not* the packed
   CUDA kernels. A speed claim requires the packed inference path on GPU — which
   is exactly why the design says "do not claim a speedup unless it is benchmarked."
+  **That benchmark now exists** — see "Measured quantized-matmul speed" above:
+  the QAT path is slower by design, and a real INT8 matmul wins only ~1.2–1.4× at
+  large sizes on this GPU, so no unqualified speedup is claimed.
 
 ## What Stage 0 proves
 
@@ -339,7 +385,8 @@ Ran `python scripts/bitmem_stage1_baseline.py --steps 400 --dim 128 --depth 2`
 ## What Stage 0 does NOT prove (stated up front)
 
 - Generation quality — the DiT is randomly initialized (smoke test only)
-- Scale — brute-force retrieval, in-RAM store (FAISS/HNSW arrives Stage 3)
+- Scale — Stage 0's store is brute-force in-RAM; the HNSW `AnnMemoryStore` and
+  TurboQuant-compressed backend (both added later, documented above) address this
 - The hypothesis — needs trained models + the ablation matrix (Stages 1–5)
 
 ## Layout
