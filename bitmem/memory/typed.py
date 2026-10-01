@@ -257,6 +257,45 @@ class MemorySystem:
             long_term=make(LongTermMemory),
         )
 
+    @classmethod
+    def with_turbo_ann(
+        cls,
+        dim: int,
+        *,
+        bits: int = 8,
+        seed: int = 100,
+    ) -> "MemorySystem":
+        """Build a MemorySystem whose typed stores are BOTH TurboQuant-compressed
+        and HNSW-indexed — the scalable + compact production configuration.
+
+        Each typed memory keeps a `TurboAnnMemoryStore`: keys are persisted as
+        ~`bits`-per-coordinate codes (storage win) and indexed for ~O(log N)
+        approximate retrieval (latency win). Type policies are unchanged; only
+        the storage backend swaps. Falls back to brute force over reconstructions
+        when hnswlib is unavailable.
+        """
+        from bitmem.memory.turbo_ann_store import TurboAnnMemoryStore
+
+        def make(type_cls):
+            inst = type_cls()
+            backend = TurboAnnMemoryStore(
+                dim,
+                bits=bits,
+                policy=inst.store.policy,
+                max_items=inst.config.max_items,
+                diversity_weight=inst.config.diversity_weight,
+                seed=seed,
+            )
+            inst.store = backend
+            return inst
+
+        return cls(
+            episodic=make(EpisodicMemory),
+            semantic=make(SemanticMemory),
+            procedural=make(ProceduralMemory),
+            long_term=make(LongTermMemory),
+        )
+
     def write(self, item: MemoryItem, memory_type: str = "episodic") -> str | None:
         store = self._by_type.get(memory_type)
         if store is None:

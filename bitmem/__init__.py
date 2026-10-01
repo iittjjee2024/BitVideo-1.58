@@ -33,6 +33,7 @@ from bitmem.memory.turboquant import (
 )
 from bitmem.memory.turbo_store import TurboQuantMemoryStore
 from bitmem.memory.ann_store import AnnMemoryStore
+from bitmem.memory.turbo_ann_store import TurboAnnMemoryStore
 
 __all__ = [
     "AgentController",
@@ -49,6 +50,7 @@ __all__ = [
     "MemorySystem",
     "RandomRotation",
     "RetrievalPolicy",
+    "TurboAnnMemoryStore",
     "TurboQuantConfig",
     "TurboQuantMSE",
     "TurboQuantMemoryStore",

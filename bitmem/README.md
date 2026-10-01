@@ -20,8 +20,9 @@ behind an interface so the ablation matrix can attempt to *falsify* the hypothes
 | **5** | Joint optimization + full ablation matrix (the hypothesis test) | ✅ **done, 10 tests pass** |
 | **+** | **TurboQuant** vector quantization for the memory store (Google, ICLR 2026) | ✅ **done, 11 tests pass** |
 | **+** | **ANN index** backend (HNSW) — closes the brute-force O(N) retrieval caveat | ✅ **done, 8 tests pass** |
+| **+** | **Combined TurboQuant+ANN** backend — scalable *and* compact at once | ✅ **done, 7 tests pass** |
 
-**Full suite: 109 tests passing.** Training/eval auto-select CUDA when a GPU is
+**Full suite: 116 tests passing.** Training/eval auto-select CUDA when a GPU is
 present (`device="auto"`); all results below were measured on an RTX 5050 Laptop
 GPU (sm_120) or CPU as noted.
 
@@ -285,6 +286,34 @@ approximate index on set-overlap. Recall is tunable via `ef_query` and
 well-separated (the realistic case), recall stays high.
 
 Reproduce: `python scripts/bitmem_ann_bench.py`
+
+### Combined backend — scalable AND compact (TurboQuant + ANN)
+
+The two store optimizations compose. `memory/turbo_ann_store.py::TurboAnnMemoryStore`
+(also `MemorySystem.with_turbo_ann(dim, bits=…)`) TurboQuant-compresses every key
+*and* indexes it in an HNSW graph: it persists only the compact codes (storage
+win) while indexing each key's reconstruction so the ANN graph matches what
+retrieval scores against (latency win). This is the realistic production config
+for a large memory store.
+
+**Measured** (`scripts/bitmem_backend_compare.py`, N=3000, dim 128, k=10, 8-bit,
+recall@10 vs exact fp32, CPU single-thread):
+
+| backend | recall@10 | ms/query | speedup | key storage |
+|---------|-----------|----------|---------|-------------|
+| brute-fp32 (`DictMemoryStore`) | 1.000 | 55.5 | 1.0× | 1.00× |
+| ann-fp32 (`AnnMemoryStore`) | 0.999 | 1.85 | 29.9× | 1.00× |
+| turbo-brute (`TurboQuantMemoryStore`) | 0.989 | 57.0 | 1.0× | 3.88× |
+| **turbo-ann (`TurboAnnMemoryStore`)** | **0.989** | **1.89** | **29.4×** | **3.88×** |
+
+**Reading:** `turbo-ann` captures both wins simultaneously — it matches
+`ann-fp32`'s ~30× query speedup *and* `turbo-brute`'s 3.88× key compression, at
+recall 0.989. The small recall cost is entirely the 8-bit quantization (identical
+to `turbo-brute`); the ANN adds no further loss here. The two approximations
+stack with no interaction penalty. Lower `bits` trades recall for more
+compression; higher `ef_query`/`over_fetch` trades latency for more recall.
+
+Reproduce: `python scripts/bitmem_backend_compare.py`
 
 ### Measured quantized-matmul speed — closing the "speed is not benchmarked" caveat
 
