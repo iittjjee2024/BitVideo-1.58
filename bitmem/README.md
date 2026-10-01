@@ -329,6 +329,48 @@ rather than papering over.
 
 Reproduce: `python scripts/bitmem_quant_speed_bench.py`
 
+#### Why the numbers above use the portable tier (compiled-kernel build status)
+
+The real W1.58A8 speedup lives in the hand-written CUDA kernels under
+`bitvideo/cuda/` (`ternary_gemm.cu`, `int8_gemm.cu`, `bit_gemm_kernel.cu`, …),
+compiled into the optional `bitvideo._C` extension. **We attempted the build in
+this environment and it is blocked by a missing toolchain, not by the code.**
+The exact failure (`python setup.py build_ext --inplace`, `BITVIDEO_FORCE_CUDA=1`):
+
+```
+RuntimeError: [bitvideo] nvcc not found. Set CUDA_HOME or add nvcc to PATH
+to build the fused W1.58A8 kernels.
+```
+
+What is and isn't present here:
+- ✅ CUDA **runtime** (ships with the `torch==2.11.0+cu128` wheel) — enough to
+  *run* CUDA ops like `_int_mm`, which is why the GPU benchmarks above work.
+- ❌ CUDA **Toolkit** (`nvcc`) — not installed; `torch.utils.cpp_extension.CUDA_HOME`
+  is `None`. Needed to *compile* custom kernels.
+- ❌ **MSVC** (`cl.exe`) — not installed; required as the host compiler on Windows.
+
+`setup.py` fails fast and gracefully at the `nvcc` gate, so the package stays
+fully usable on the portable PyTorch tier (every test and benchmark here runs).
+Building the compiled kernels is a system-level install (multi-GB, admin), so it
+is out of scope for this environment — but the path is straightforward on a
+machine that has the toolchain:
+
+```bash
+# Prerequisites: CUDA Toolkit 12.8+ (for RTX 50xx / sm_120), MSVC Build Tools
+#                (Windows) or gcc/g++ (Linux), matching the torch CUDA version.
+pip install -e .                      # builds bitvideo._C if nvcc is found
+# or just the kernels:
+python setup.py build_ext --inplace
+BITVIDEO_CUDA_ARCH="120" python setup.py build_ext --inplace   # target one arch
+```
+
+After a successful build, `bitvideo.ops.backends.backend_status().cuda_extension`
+flips to `True`, `BitLinear`'s packed path dispatches to the fused kernels instead
+of the portable tier, and re-running `scripts/bitmem_quant_speed_bench.py` would
+report the *real* ternary latency. We deliberately do **not** fabricate those
+numbers here — the benchmark prints `cuda_ext=False` and labels the packed column
+"portable" so no result is mistaken for compiled-kernel performance.
+
 ### Stage 1 + 2 measured results (synthetic task, tiny DiT, CPU)
 
 Ran `python scripts/bitmem_stage1_baseline.py --steps 400 --dim 128 --depth 2`
