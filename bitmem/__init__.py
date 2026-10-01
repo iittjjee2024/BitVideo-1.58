@@ -32,9 +32,11 @@ from bitmem.memory.turboquant import (
     TurboQuantProd,
 )
 from bitmem.memory.turbo_store import TurboQuantMemoryStore
+from bitmem.memory.ann_store import AnnMemoryStore
 
 __all__ = [
     "AgentController",
+    "AnnMemoryStore",
     "ControllerConfig",
     "CosineRetrievalPolicy",
     "DictMemoryStore",
